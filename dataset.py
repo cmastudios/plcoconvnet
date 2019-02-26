@@ -17,6 +17,7 @@ class Dataset(object):
         self.name = name
         self.im_size = im_size
         self.classes = classes
+        self.class_map = {name:index for index, name in enumerate(self.classes)}
         self.i = 0
         self.test_size = test_size
         num_feat = max_memory // np.prod(im_size) // 8
@@ -24,21 +25,16 @@ class Dataset(object):
         self.labels = np.zeros((num_feat, len(classes)), dtype='float64')
         logger.info('Initialized {} dataset with {} features.'.format(name, num_feat))
 
-    def _get_class_idx(self, name):
-        for i, x in enumerate(self.classes):
-            if x == name:
-                return i
-        return float('nan')
-
     def add_feature(self, feature, label):
         if self.i >= self.features.shape[0]:
             raise RuntimeError('out of space')
+            
         if self.features[self.i].any():
             # there's already something there
-            bb = self.badblocks()
-            if len(bb) > 0:
-                self.i = bb.pop(0)
-                logger.warning('Updating i to first bad block {}.'.format(self.i))
+            bb = self.first_empty_space(self.i)
+            if bb is not None:
+                self.i = bb
+                logger.warning('Updating i to next bad block {}.'.format(self.i))
             else:
                 raise RuntimeError('out of space')
 
@@ -59,9 +55,13 @@ class Dataset(object):
 
         if feature.dtype != 'float64' or feature.max() > 1:
             feature = skimage.util.img_as_float(feature)
+           
+        if not feature.any():
+            logger.warning("Not inserting feature {} as it is all black".format(self.i))
+            return
 
         if not isinstance(label, float):
-            label = self._get_class_idx(label)
+            label = self.class_map[label]
 
         self.features[self.i] = feature
         self.labels[self.i][label] = 1.
@@ -73,18 +73,21 @@ class Dataset(object):
     def save(self):
         filename = '{name}_{x}x{y}_{block}.npz'.format(name=self.name, x=self.im_size[0],
                                                        y=self.im_size[1], block=0)
-        total = dataset.badblocks().pop(0)
-        self.features.reshape((total, self.features.shape[1]))
-        self.labels.reshape((total, self.labels.shape[1]))
+        total = self.first_empty_space(self.i)
+        to_delete = self.features.shape[0] - total
+        if to_delete > 5:
+            logger.info("Clearing {} unused spaces".format(to_delete))
+        self.features = self.features[:total, :]
+        self.labels = self.features[:total, :]
+
         np.savez_compressed(filename, features=self.features, labels=self.labels,
                             classes=self.classes, test_size=self.test_size)
 
-    def badblocks(self):
-        result = []
-        for i in range(self.features.shape[0]):
+    def first_empty_space(self, start=0):
+        for i in range(start, self.features.shape[0]):
             if not self.features[i].any():
-                result.append(i)
-        return result
+                return i
+        return None
 
     @classmethod
     def load(cls, name):
@@ -110,7 +113,6 @@ class Dataset(object):
             pass
             
         logger.info('Loaded {} dataset with {} features.'.format(self.name, self.features.shape[0]))
-
         return self
 
     def batch(self):
@@ -119,7 +121,7 @@ class Dataset(object):
 
 class Batch(object):
     def __init__(self, dataset):
-        total = dataset.badblocks().pop(0)
+        total = dataset.first_empty_space()
         self.feature_i = 0
         # Split the data into train and validation sections.
         if dataset.test_size == 1:
