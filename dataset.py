@@ -123,7 +123,7 @@ class Batch(object):
     def __init__(self, dataset):
         total = dataset.first_empty_space()
         if total is None:
-			total = dataset.features.shape[0]
+            total = dataset.features.shape[0]
         self.feature_i = 0
         # Split the data into train and validation sections.
         if dataset.test_size == 1:
